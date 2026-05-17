@@ -1,0 +1,84 @@
+name: Android CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Sign APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Java 17 (matches compileOptions / kotlinOptions in app/build.gradle)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # ── 3. Flutter SDK ─────────────────────────────────────────────────────
+      #   Use channel only — do NOT set flutter-version alongside channel,
+      #   it causes "Unable to determine Flutter version for channel: stable".
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      # ── 4. Verify project root ─────────────────────────────────────────────
+      #   pubspec.yaml must exist at repo root because app/build.gradle says:
+      #   flutter { source '../..' }  → Flutter root = two levels above android/app
+      - name: Verify Flutter project root
+        run: |
+          if [ ! -f pubspec.yaml ]; then
+            echo "ERROR: pubspec.yaml not found in repo root."
+            echo "flutter { source '../..' } in android/app/build.gradle requires"
+            echo "pubspec.yaml and lib/ to be at the repository root."
+            exit 1
+          fi
+          echo "✓ pubspec.yaml found at repo root"
+          cat pubspec.yaml | grep "^name:\|^version:"
+
+      # ── 5. Flutter dependencies ────────────────────────────────────────────
+      #   Runs from repo root (where pubspec.yaml lives)
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      # ── 6. Analyze (non-blocking) ──────────────────────────────────────────
+      - name: Analyze code
+        run: flutter analyze --no-fatal-infos
+        continue-on-error: true
+
+      # ── 7. Unit tests (non-blocking) ───────────────────────────────────────
+      - name: Run tests
+        run: flutter test
+        continue-on-error: true
+
+      # ── 8. Grant gradlew execute permission ───────────────────────────────
+      #   gradlew lives inside android/ — NOT in repo root
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      # ── 9. Build release APK ───────────────────────────────────────────────
+      #   flutter build apk runs from repo root; Flutter finds android/ automatically.
+      #   --no-shrink: matches minifyEnabled false + shrinkResources false in build.gradle
+      #   Release uses signingConfigs.debug — no keystore secrets needed.
+      - name: Build release APK
+        run: flutter build apk --release --no-shrink
+
+      # ── 10. Upload APK artifact ────────────────────────────────────────────
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: caption-lens-v8-build${{ github.run_number }}
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
